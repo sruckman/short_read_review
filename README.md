@@ -1,2 +1,1 @@
-# heritability_evolvability
-Short Read Review Box 1: A Practical Guide for Estimating Heritability and Evolvability
+# Short Read Review Box 1: A Practical Guide for Estimating Heritability and Evolvability
