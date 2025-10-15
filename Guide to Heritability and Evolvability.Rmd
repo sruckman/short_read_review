@@ -45,26 +45,54 @@ A CSV file with two columns: `phenotype_parent` and `phenotype_offspring`. For m
 
 #### Function Definition
 ```{r define_po_fun, echo=TRUE}
-calculate_h2_parent_offspring <- function(data, regression_type = "single_parent") {
+calculate_h2_parent_offspring <- function(data, regression_type = "single_parent", n_bootstraps = 1000) {
+  # --- Validate Inputs ---
   if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
   required_cols <- c("phenotype_parent", "phenotype_offspring")
   if (!all(required_cols %in% names(data))) stop(paste("Dataframe must contain:", paste(required_cols, collapse = ", ")))
   if (!(regression_type %in% c("single_parent", "mid_parent"))) stop("regression_type must be 'single_parent' or 'mid_parent'.")
+
+  # --- Point Estimate Calculation ---
   model <- lm(phenotype_offspring ~ phenotype_parent, data = data)
   slope <- coef(model)["phenotype_parent"]
   multiplier <- ifelse(regression_type == "single_parent", 2, 1)
-  h2 <- multiplier * slope
-  ci_h2 <- multiplier * confint(model, "phenotype_parent", level = 0.95)
+  h2_est <- multiplier * slope
   Vp_offspring <- var(data$phenotype_offspring)
-  Va <- h2 * Vp_offspring
+  Va_est <- h2_est * Vp_offspring
   mean_offspring <- mean(data$phenotype_offspring)
-  CVA <- (100 * sqrt(Va)) / mean_offspring
-  return(list(h2 = h2, h2_ci_95 = ci_h2, CVA_percent = CVA))
+  CVA_est <- if (Va_est < 0) NA else (100 * sqrt(Va_est)) / mean_offspring
+  
+  # --- Bootstrap for Confidence Intervals ---
+  boot_h2 <- numeric(n_bootstraps)
+  boot_CVA <- numeric(n_bootstraps)
+  
+  for (i in 1:n_bootstraps) {
+    boot_data <- data[sample(nrow(data), replace = TRUE), ]
+    boot_model <- lm(phenotype_offspring ~ phenotype_parent, data = boot_data)
+    boot_slope <- coef(boot_model)["phenotype_parent"]
+    
+    if (is.na(boot_slope)) {
+      boot_h2[i] <- NA
+      boot_CVA[i] <- NA
+      next
+    }
+    
+    boot_h2[i] <- multiplier * boot_slope
+    boot_Vp <- var(boot_data$phenotype_offspring)
+    boot_Va <- boot_h2[i] * boot_Vp
+    boot_mean <- mean(boot_data$phenotype_offspring)
+    boot_CVA[i] <- if (boot_Va < 0) NA else (100 * sqrt(boot_Va)) / boot_mean
+  }
+  
+  h2_ci <- quantile(boot_h2, c(0.025, 0.975), na.rm = TRUE)
+  CVA_ci <- quantile(boot_CVA, c(0.025, 0.975), na.rm = TRUE)
+  
+  return(list(h2 = h2_est, h2_ci_95 = h2_ci, CVA_percent = CVA_est, CVA_ci_95 = CVA_ci))
 }
 ```
 
 #### Example Usage
-```{r parent_offspring, eval=FALSE}
+```{r parent_offspring}
 # Assumes 'parent_offspring.csv' is in your working directory
 parent_offspring_data <- read.csv("parent_offspring.csv")
 
@@ -89,25 +117,65 @@ A CSV file with columns for `sire_ID`, `dam_ID`, and `phenotype`.
 
 #### Function Definition
 ```{r define_half_sib, echo = TRUE}
-calculate_h2_half_sib <- function(data) {
+calculate_h2_half_sib <- function(data, n_bootstraps = 1000) {
+  # --- Validate Inputs ---
   if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
-  required_cols <- c("sire_ID", "phenotype")
+  required_cols <- c("sire_ID", "dam_ID", "phenotype")
   if (!all(required_cols %in% names(data))) stop(paste("Dataframe must contain:", paste(required_cols, collapse = ", ")))
-  model <- lmer(phenotype ~ (1 | sire_ID), data = data)
+  
+  # --- Point Estimate Calculation ---
+  model <- lmer(phenotype ~ (1 | sire_ID) + (1 | dam_ID), data = data)
   variances <- as.data.frame(VarCorr(model))
   var_sire <- variances[variances$grp == "sire_ID", "vcov"]
+  var_dam <- variances[variances$grp == "dam_ID", "vcov"]
   var_residual <- variances[variances$grp == "Residual", "vcov"]
-  h2 <- (4 * var_sire) / (var_sire + var_residual)
-  Va <- 4 * var_sire
+  Vp <- var_sire + var_dam + var_residual
+  h2_est <- (4 * var_sire) / Vp
+  Va_est <- 4 * var_sire
   trait_mean <- mean(data$phenotype)
-  CVA <- (100 * sqrt(Va)) / trait_mean
-  return(list(h2 = h2, CVA_percent = CVA))
+  CVA_est <- (100 * sqrt(Va_est)) / trait_mean
+  
+  # --- Bootstrap for Confidence Intervals ---
+  boot_h2 <- numeric(n_bootstraps)
+  boot_CVA <- numeric(n_bootstraps)
+  
+  for (i in 1:n_bootstraps) {
+    boot_data <- data[sample(nrow(data), replace = TRUE), ]
+    
+    # Use try to handle potential model convergence issues on bootstrap samples
+    boot_model <- try(lmer(phenotype ~ (1 | sire_ID) + (1 | dam_ID), data = boot_data), silent = TRUE)
+    
+    if (inherits(boot_model, "try-error")) {
+      boot_h2[i] <- NA
+      boot_CVA[i] <- NA
+      next
+    }
+    
+    boot_vars <- as.data.frame(VarCorr(boot_model))
+    boot_var_sire <- boot_vars[boot_vars$grp == "sire_ID", "vcov"]
+    boot_var_dam <- boot_vars[boot_vars$grp == "dam_ID", "vcov"]
+    boot_var_res <- boot_vars[boot_vars$grp == "Residual", "vcov"]
+    
+    # Ensure all variance components were estimated
+    if (length(c(boot_var_sire, boot_var_dam, boot_var_res)) < 3) {
+       boot_h2[i] <- NA; boot_CVA[i] <- NA; next
+    }
+
+    boot_Vp <- boot_var_sire + boot_var_dam + boot_var_res
+    boot_h2[i] <- (4 * boot_var_sire) / boot_Vp
+    boot_Va <- 4 * boot_var_sire
+    boot_CVA[i] <- (100 * sqrt(boot_Va)) / mean(boot_data$phenotype)
+  }
+  
+  h2_ci <- quantile(boot_h2, c(0.025, 0.975), na.rm = TRUE)
+  CVA_ci <- quantile(boot_CVA, c(0.025, 0.975), na.rm = TRUE)
+  
+  return(list(h2 = h2_est, h2_ci_95 = h2_ci, CVA_percent = CVA_est, CVA_ci_95 = CVA_ci))
 }
 ```
 
-
 #### Example Usage
-```{r half_sib, eval=FALSE}
+```{r half_sib}
 library(lme4)
 
 # Assumes 'half_sib.csv' is in your working directory
@@ -127,6 +195,7 @@ This method calculates realized heritability and evolvability from a one-generat
 
 This method does not use a CSV file and instead uses the means of initial population, selected parents, and offspring.
 
+#### Function Definition
 ```{r define_realized_h2, echo=TRUE}
 calculate_h2_realized_from_means <- function(mean_initial, mean_selected, mean_offspring) {
   if (!is.numeric(mean_initial) || !is.numeric(mean_selected) || !is.numeric(mean_offspring)) stop("All mean values must be numeric.")
@@ -138,9 +207,8 @@ calculate_h2_realized_from_means <- function(mean_initial, mean_selected, mean_o
 }
 ```
 
-
 #### Example Usage
-```{r realized_h2, eval=FALSE}
+```{r realized_h2}
 # Note the 'mean_standardized_evolvability' in the output.
 calculate_h2_realized_from_means(
   mean_initial = 100,
@@ -148,6 +216,8 @@ calculate_h2_realized_from_means(
   mean_offspring = 110
 )
 ```
+
+**Note on Confidence Intervals:** Calculating confidence intervals for this function requires the standard errors and sample sizes of the input means. Since this function only accepts the point estimates of the means, it cannot compute confidence intervals. To get CIs, you would need to use a function that takes raw phenotype data as input (see Part 2B)
 
 ## B. From Selection Proportion (Truncation Selection)
 
@@ -162,31 +232,53 @@ A CSV file with 2 columns: `group` (`initial` or `offspring`) and `phenotype`.
 | offspring   | 11.5      |
 | ...         | ...       |
 
-
+#### Function Definition
 ```{r define_realized_h2_proportion, echo=TRUE}
-calculate_h2_realized_from_proportion <- function(data, proportion_selected) {
+calculate_h2_realized_from_proportion <- function(data, proportion_selected, n_bootstraps = 1000) {
+  # --- Validate Inputs ---
   if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
-  required_cols <- c("group", "phenotype")
-  if (!all(required_cols %in% names(data))) stop("Dataframe must contain 'group' and 'phenotype' columns.")
-  if (!all(c("initial", "offspring") %in% unique(data$group))) stop("'group' column must contain 'initial' and 'offspring'.")
+  if (!all(c("group", "phenotype") %in% names(data))) stop("Data must contain 'group' and 'phenotype'.")
   if (!is.numeric(proportion_selected) || proportion_selected <= 0 || proportion_selected >= 1) stop("'proportion_selected' must be between 0 and 1.")
-  initial_phenotypes <- data$phenotype[data$group == "initial"]
-  offspring_phenotypes <- data$phenotype[data$group == "offspring"]
-  mean_initial <- mean(initial_phenotypes)
-  mean_offspring <- mean(offspring_phenotypes)
-  R <- mean_offspring - mean_initial
-  sd_initial <- sd(initial_phenotypes)
+  
+  # --- Point Estimate Calculation ---
+  initial_pheno <- data$phenotype[data$group == "initial"]
+  offspring_pheno <- data$phenotype[data$group == "offspring"]
+  R <- mean(offspring_pheno) - mean(initial_pheno)
   selection_intensity <- dnorm(qnorm(1 - proportion_selected)) / proportion_selected
-  S <- selection_intensity * sd_initial
-  h2 <- if (S == 0) NA else R / S
-  evolvability <- R / mean_initial
-  return(list(realized_h2 = h2, mean_standardized_evolvability = evolvability))
+  S <- selection_intensity * sd(initial_pheno)
+  h2_est <- R / S
+  Va_est <- h2_est * var(initial_pheno)
+  CVA_est <- if (Va_est < 0) NA else (100 * sqrt(Va_est)) / mean(initial_pheno)
+  
+  # --- Bootstrap for Confidence Intervals ---
+  boot_h2 <- numeric(n_bootstraps)
+  boot_CVA <- numeric(n_bootstraps)
+  
+  for (i in 1:n_bootstraps) {
+    boot_initial <- sample(initial_pheno, replace = TRUE)
+    boot_offspring <- sample(offspring_pheno, replace = TRUE)
+    
+    boot_R <- mean(boot_offspring) - mean(boot_initial)
+    boot_S <- selection_intensity * sd(boot_initial)
+    
+    if (boot_S == 0) {
+      boot_h2[i] <- NA; boot_CVA[i] <- NA; next
+    }
+    
+    boot_h2[i] <- boot_R / boot_S
+    boot_Va <- boot_h2[i] * var(boot_initial)
+    boot_CVA[i] <- if (boot_Va < 0) NA else (100 * sqrt(boot_Va)) / mean(boot_initial)
+  }
+  
+  h2_ci <- quantile(boot_h2, c(0.025, 0.975), na.rm = TRUE)
+  CVA_ci <- quantile(boot_CVA, c(0.025, 0.975), na.rm = TRUE)
+  
+  return(list(realized_h2 = h2_est, h2_ci_95 = h2_ci, CVA_percent = CVA_est, CVA_ci_95 = CVA_ci))
 }
 ```
 
-
 #### Example Usage
-```{r realized_h2_proportion, eval=FALSE}
+```{r realized_h2_proportion}
 # Assumes 'selection_experiment.csv' is in your working directory
 selection_data <- read.csv("selection_experiment.csv")
 
@@ -210,31 +302,55 @@ A CSV file with two columns: `line_ID` and `phenotype`.
 
 #### Function Definition
 ```{r define_broad_sense, echo=TRUE}
-calculate_H2_replicated_lines <- function(data, line_type = "clone") {
+calculate_H2_replicated_lines <- function(data, n_bootstraps = 1000) {
+  # --- Validate Inputs ---
   if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
-  required_cols <- c("line_ID", "phenotype")
-  if (!all(required_cols %in% names(data))) stop("Dataframe must contain 'line_ID' and 'phenotype'.")
-  if (!(line_type %in% c("clone", "inbred_line"))) stop("line_type must be 'clone' or 'inbred_line'.")
+  if (!all(c("line_ID", "phenotype") %in% names(data))) stop("Data must contain 'line_ID' and 'phenotype'.")
+  
+  # --- Point Estimate Calculation ---
   model <- lmer(phenotype ~ (1 | line_ID), data = data)
   variances <- as.data.frame(VarCorr(model))
   var_genetic <- variances[variances$grp == "line_ID", "vcov"]
   var_residual <- variances[variances$grp == "Residual", "vcov"]
-  H2 <- var_genetic / (var_genetic + var_residual)
-  interp_note <- if (line_type == "inbred_line") "For inbred lines, Vg is primarily additive (Vg ≈ Va)." else "For clones, Vg includes additive, dominance, and epistatic variance."
-  return(list(broad_sense_H2 = H2, interpretation = interp_note))
+  H2_est <- var_genetic / (var_genetic + var_residual)
+  
+  # --- Bootstrap for Confidence Intervals ---
+  boot_H2 <- numeric(n_bootstraps)
+  
+  for (i in 1:n_bootstraps) {
+    boot_data <- data[sample(nrow(data), replace = TRUE), ]
+    boot_model <- try(lmer(phenotype ~ (1 | line_ID), data = boot_data), silent = TRUE)
+    
+    if (inherits(boot_model, "try-error")) {
+      boot_H2[i] <- NA; next
+    }
+    
+    boot_vars <- as.data.frame(VarCorr(boot_model))
+    boot_var_gen <- boot_vars[boot_vars$grp == "line_ID", "vcov"]
+    boot_var_res <- boot_vars[boot_vars$grp == "Residual", "vcov"]
+    
+    if (length(c(boot_var_gen, boot_var_res)) < 2) {
+      boot_H2[i] <- NA; next
+    }
+    
+    boot_H2[i] <- boot_var_gen / (boot_var_gen + boot_var_res)
+  }
+  
+  H2_ci <- quantile(boot_H2, c(0.025, 0.975), na.rm = TRUE)
+  
+  return(list(broad_sense_H2 = H2_est, H2_ci_95 = H2_ci))
 }
 ```
 
-
 #### Example Usage
-```{r broad_sense_h2, eval=FALSE}
+```{r broad_sense_h2}
 library(lme4)
 
 # Assumes 'replicated_lines.csv' is in your working directory
 ril_data <- read.csv("replicated_lines.csv")
 
 # Run the function for inbred lines.
-calculate_H2_replicated_lines(ril_data, line_type = "inbred_line")
+calculate_H2_replicated_lines(ril_data)
 
 ```
 
@@ -246,43 +362,78 @@ This method is for binary (0/1) or disease (present/absent) traits where a conti
 
 #### Data Format (No CSV file)
 
-This function does not require a data file. Instead, it requires two prevalence rates (proportions between 0 and 1):
+This function does not require a data file. Instead, it requires two prevalence rates (proportions between 0 and 1) and can optionally accept sample sizes to calculate confidence intervals.
 
 - general_pop_prevalence: The proportion of individuals in the general population that have the trait.
 - relatives_prevalence: The proportion of individuals that have the trait among the relatives of affected individuals.
+- n_general_pop (Optional): The total number of individuals in the general population sample.
+- n_relatives (Optional): The total number of individuals in the relatives sample.
 
 #### Function Definition
 ```{r define_threshold, echo=TRUE}
-calculate_h2_liability_threshold <- function(general_pop_prevalence, relatives_prevalence, relationship_r = 0.5) {
-  if (any(c(general_pop_prevalence, relatives_prevalence) <= 0) || any(c(general_pop_prevalence, relatives_prevalence) >= 1)) {
-    stop("Prevalence rates must be between 0 and 1.")
+calculate_h2_liability_threshold <- function(general_pop_prevalence, relatives_prevalence, relationship_r = 0.5, 
+                                           n_general_pop = NULL, n_relatives = NULL, n_bootstraps = 1000) {
+  
+  # --- Internal function to calculate h2 from prevalences ---
+  .h2_from_prev <- function(p_g, p_r, r) {
+    # Handle edge cases where prevalence is 0 or 1
+    if (p_g <= 0 || p_g >= 1 || p_r <= 0 || p_r >= 1) return(NA)
+    
+    t_g <- qnorm(1 - p_g)
+    t_r <- qnorm(1 - p_r)
+    x_g <- dnorm(t_g) / p_g
+    h2 <- (x_g * (t_g - t_r)) / (r * (1 + (x_g * (x_g - t_g))))
+    return(h2)
   }
-  # Calculate thresholds on the standard normal (liability) scale
-  t_g <- qnorm(1 - general_pop_prevalence) # Threshold for general population
-  t_r <- qnorm(1 - relatives_prevalence)   # Threshold for relatives
   
-  # Calculate the mean liability of affected individuals in the general population
-  x_g <- dnorm(t_g) / general_pop_prevalence
+  # --- Point Estimate ---
+  h2_est <- .h2_from_prev(general_pop_prevalence, relatives_prevalence, relationship_r)
   
-  # Falconer's formula to estimate heritability on the liability scale
-  h2 <- (x_g * (t_g - t_r)) / (relationship_r * (1 + (x_g * (x_g - t_g))))
-  
-  return(list(heritability_on_liability_scale = h2))
+  # --- Conditional Confidence Interval Calculation ---
+  if (!is.null(n_general_pop) && !is.null(n_relatives)) {
+    
+    boot_h2 <- numeric(n_bootstraps)
+    for (i in 1:n_bootstraps) {
+      # Parametric bootstrap: simulate new counts based on original prevalence and N
+      boot_count_g <- rbinom(1, n_general_pop, general_pop_prevalence)
+      boot_count_r <- rbinom(1, n_relatives, relatives_prevalence)
+      
+      boot_prev_g <- boot_count_g / n_general_pop
+      boot_prev_r <- boot_count_r / n_relatives
+      
+      boot_h2[i] <- .h2_from_prev(boot_prev_g, boot_prev_r, relationship_r)
+    }
+    
+    h2_ci <- quantile(boot_h2, c(0.025, 0.975), na.rm = TRUE)
+    
+    return(list(heritability_on_liability_scale = h2_est, h2_ci_95 = h2_ci))
+    
+  } else {
+    # Return only the point estimate if sample sizes are not provided
+    return(list(heritability_on_liability_scale = h2_est, 
+                note = "Provide n_general_pop and n_relatives to calculate confidence intervals."))
+  }
 }
 ```
 
 #### Example Usage
-```{r threshold, eval=FALSE}
-# Example: A disease has a 1% prevalence in the general population,
-# but a 5% prevalence in the full-siblings of affected individuals.
-pop_prev <- 0.01
-sibs_prev <- 0.05
-
-# Run the function. 'relationship_r' is 0.5 for full-sibs.
+```{r threshold}
+# Example 1: No sample sizes provided (returns point estimate only)
+# A disease has a 1% prevalence in the general population,
+# but a 2% prevalence in the full-siblings (r=0.5) of affected individuals.
 calculate_h2_liability_threshold(
-  general_pop_prevalence = pop_prev,
-  relatives_prevalence = sibs_prev,
+  general_pop_prevalence = 0.01,
+  relatives_prevalence = 0.02,
   relationship_r = 0.5
+)
+
+# Example 2: Sample sizes provided (returns point estimate and 95% CI)
+calculate_h2_liability_threshold(
+  general_pop_prevalence = 0.01,
+  relatives_prevalence = 0.02,
+  relationship_r = 0.5,
+  n_general_pop = 10000,
+  n_relatives = 500
 )
 ```
 
@@ -290,45 +441,79 @@ calculate_h2_liability_threshold(
 
 # Part 5: Realized Heritability from Proportions (X-QTL Method)
 
-This method, based on the principles of liability threshold models, estimates realized heritability from a truncation selection experiment. It is useful when you don't have individual phenotypic measurements but instead know the proportion of the parental population that was selected and the proportion of the offspring generation that exceeds the same selection threshold.
+This method, based on the principles of liability threshold models, estimates realized heritability from an X-QTL experiment. It is useful when you don't have individual phenotypic measurements but instead know the proportion of the parental population that was selected and the proportion of the offspring generation that exceeds the same selection threshold.
 
 #### Data Format (No CSV file)
 
-This function does not require a data file. It uses two proportions (values between 0 and 1):
+This function does not require a data file. It uses two proportions (values between 0 and 1) and can optionally accept sample sizes to calculate confidence intervals.
 
 - Par_pro: The proportion of parents selected from the P₀ generation (e.g., the top 5% = 0.05).
 - Off_pro: The proportion of the F₁ offspring generation that exceeds the same phenotypic threshold used to select the parents.
+- n_parents (Optional): The total number of individuals in the parent generation P₀.
+- n_offspring (Optional): The total number of individuals in the offspring generation F₁.
 
 #### Function Definition
 ```{r define_XQTL, echo=TRUE}
-realized_heritability_XQTL <- function(Par_pro, Off_pro) {
-  # Calculate the selection threshold on the standard normal (liability) scale
-  threshold <- qnorm(1 - Par_pro)
+realized_heritability_XQTL <- function(Par_pro, Off_pro, n_parents = NULL, n_offspring = NULL, n_bootstraps = 1000) {
+
+  # --- Internal function to calculate h2 from proportions ---
+  .h2_from_prop <- function(p_par, p_off) {
+    # Handle edge cases where proportions are 0 or 1
+    if (p_par <= 0 || p_par >= 1 || p_off <= 0 || p_off >= 1) return(NA)
+    
+    threshold <- qnorm(1 - p_par)
+    S <- dnorm(threshold) / p_par
+    R <- threshold - qnorm(1 - p_off)
+    h2 <- R / S
+    return(h2)
+  }
   
-  # Calculate the selection intensity (i), which is the mean of the selected parents
-  # on the liability scale. This is the Selection Differential (S).
-  par_i <- dnorm(threshold) / Par_pro
+  # --- Point Estimate ---
+  h2_est <- .h2_from_prop(Par_pro, Off_pro)
   
-  # The mean of the F1 offspring generation on the liability scale is calculated
-  # from the proportion of offspring exceeding the threshold. This is the Response to Selection (R).
-  f1_mean <- threshold - qnorm(1 - Off_pro)
-  
-  # Heritability is the ratio of Response to Selection to the Selection Differential (h² = R/S)
-  h2 <- f1_mean / par_i
-  
-  return(list(realized_heritability_on_liability_scale = h2))
+  # --- Conditional Confidence Interval Calculation ---
+  if (!is.null(n_parents) && !is.null(n_offspring)) {
+    
+    boot_h2 <- numeric(n_bootstraps)
+    for (i in 1:n_bootstraps) {
+      # Parametric bootstrap: simulate new counts based on original proportions and N
+      boot_count_par <- rbinom(1, n_parents, Par_pro)
+      boot_count_off <- rbinom(1, n_offspring, Off_pro)
+      
+      boot_prop_par <- boot_count_par / n_parents
+      boot_prop_off <- boot_count_off / n_offspring
+      
+      boot_h2[i] <- .h2_from_prop(boot_prop_par, boot_prop_off)
+    }
+    
+    h2_ci <- quantile(boot_h2, c(0.025, 0.975), na.rm = TRUE)
+    
+    return(list(realized_heritability_on_liability_scale = h2_est, h2_ci_95 = h2_ci))
+    
+  } else {
+    # Return only the point estimate if sample sizes are not provided
+    return(list(realized_heritability_on_liability_scale = h2_est,
+                note = "Provide n_parents and n_offspring to calculate confidence intervals."))
+  }
 }
 ```
 
 #### Example Usage
-```{r XQTL, eval=FALSE}
-# Example 1: An experimenter selects the top 5% of flies for a trait (e.g., crawling height).
+```{r XQTL}
+# Example 1: No sample sizes provided (returns point estimate only). 
+# An experimenter selects the top 5% of flies for a trait (e.g., crawling height).
 # After they reproduce, 10% of their offspring now exceed that same height threshold.
 realized_heritability_XQTL(Par_pro = 0.05, Off_pro = 0.10)
 
-# Example 2: In a drug exposure experiment, 3% of flies survive (the selected parents).
+# Example 2: Sample sizes provided (returns point estimate and 95% CI)
+# In a drug exposure experiment, 3% of flies survive (the selected parents).
 # Their offspring are raised and re-exposed, and now 10% of the F1 generation survives.
-realized_heritability_XQTL(Par_pro = 0.03, Off_pro = 0.10)
+realized_heritability_XQTL(
+  Par_pro = 0.03, 
+  Off_pro = 0.10,
+  n_parents = 2000,
+  n_offspring = 1000
+)
 ```
 
 **Note on Evolvability:** Like the liability threshold model in Part 4, this method operates on a standardized, unobserved 'liability' scale. Because it does not use a measured trait mean, standard evolvability metrics like the Coefficient of Additive Genetic Variation (CVA) are not applicable.
