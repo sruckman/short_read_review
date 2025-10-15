@@ -1,0 +1,335 @@
+---
+title: "A Practical Guide to Estimating Heritability and Evolvability"
+author: "Sarah Ruckman"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: journal
+    toc: true
+    toc_float: true
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This guide provides R code for estimating heritability and evolvability using common experimental designs. To use this guide, you must have your data saved in CSV files with the specified column names. The code is designed to be easily adapted to your own data.
+
+Before running the code, ensure you have the necessary R packages installed. The `lme4` package is required for mixed-effects models.
+
+```{r install_packages, eval=FALSE}
+# Run this code once if you don't have the lme4 package installed
+install.packages("lme4")
+library(lme4)
+```
+
+# Part 1: Narrow-Sense Heritability (h²) and Evolvability from Pedigrees
+
+These methods are used in populations with known family structures. They allow for the estimation of narrow-sense heritability (h²), which considers only additive genetic variance, and the Coefficient of Additive Genetic Variation (CVA), a measure of evolvability.
+
+## A. Parent-Offspring Regression
+
+This method estimates h² by regressing offspring phenotypes on parental phenotypes. The slope of the relationship is proportional to the heritability.
+
+#### Data Format (`parent_offspring.csv`)
+A CSV file with two columns: `phenotype_parent` and `phenotype_offspring`. For mid-parent regression, use the average of the two parents as `phenotype_parent`.
+
+| phenotype_parent | phenotype_offspring |
+|:-----------------|:--------------------|
+| 10.5             | 10.8                |
+| 9.8              | 10.1                |
+| ...              | ...                 |
+
+#### Function Definition
+```{r define_po_fun, echo=TRUE}
+calculate_h2_parent_offspring <- function(data, regression_type = "single_parent") {
+  if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
+  required_cols <- c("phenotype_parent", "phenotype_offspring")
+  if (!all(required_cols %in% names(data))) stop(paste("Dataframe must contain:", paste(required_cols, collapse = ", ")))
+  if (!(regression_type %in% c("single_parent", "mid_parent"))) stop("regression_type must be 'single_parent' or 'mid_parent'.")
+  model <- lm(phenotype_offspring ~ phenotype_parent, data = data)
+  slope <- coef(model)["phenotype_parent"]
+  multiplier <- ifelse(regression_type == "single_parent", 2, 1)
+  h2 <- multiplier * slope
+  ci_h2 <- multiplier * confint(model, "phenotype_parent", level = 0.95)
+  Vp_offspring <- var(data$phenotype_offspring)
+  Va <- h2 * Vp_offspring
+  mean_offspring <- mean(data$phenotype_offspring)
+  CVA <- (100 * sqrt(Va)) / mean_offspring
+  return(list(h2 = h2, h2_ci_95 = ci_h2, CVA_percent = CVA))
+}
+```
+
+#### Example Usage
+```{r parent_offspring, eval=FALSE}
+# Assumes 'parent_offspring.csv' is in your working directory
+parent_offspring_data <- read.csv("parent_offspring.csv")
+
+# Run the function. Note the 'CVA_percent' value (evolvability) in the output.
+calculate_h2_parent_offspring(parent_offspring_data, regression_type = "single_parent")
+```
+
+## B. Half-Sib ANOVA
+
+In a half-sib design (e.g., multiple dams mated to each sire), h² can be estimated by partitioning variance components using a linear mixed model. The variance among sires is proportional to the additive genetic variance.
+
+#### Data Format (`half_sib.csv`)
+
+A CSV file with columns for `sire_ID`, `dam_ID`, and `phenotype`.
+
+| sire_ID | dam_ID | phenotype |
+|:--------|:-------|:----------|
+| Sire1   | Dam1A  | 10.2      |
+| Sire1   | Dam1B  | 9.9       |
+| Sire2   | Dam2A  | 11.5      |
+| ...     | ...    | ...       |
+
+#### Function Definition
+```{r define_half_sib, echo = TRUE}
+calculate_h2_half_sib <- function(data) {
+  if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
+  required_cols <- c("sire_ID", "phenotype")
+  if (!all(required_cols %in% names(data))) stop(paste("Dataframe must contain:", paste(required_cols, collapse = ", ")))
+  model <- lmer(phenotype ~ (1 | sire_ID), data = data)
+  variances <- as.data.frame(VarCorr(model))
+  var_sire <- variances[variances$grp == "sire_ID", "vcov"]
+  var_residual <- variances[variances$grp == "Residual", "vcov"]
+  h2 <- (4 * var_sire) / (var_sire + var_residual)
+  Va <- 4 * var_sire
+  trait_mean <- mean(data$phenotype)
+  CVA <- (100 * sqrt(Va)) / trait_mean
+  return(list(h2 = h2, CVA_percent = CVA))
+}
+```
+
+
+#### Example Usage
+```{r half_sib, eval=FALSE}
+library(lme4)
+
+# Assumes 'half_sib.csv' is in your working directory
+half_sib_data <- read.csv("half_sib.csv")
+
+# Run the function. Note the 'CVA_percent' value (evolvability) in the output.
+calculate_h2_half_sib(half_sib_data)
+```
+
+# Part 2: Realized Heritability (h²) and Evolvability
+
+This method calculates realized heritability and evolvability from a one-generation selection experiment using the breeder's equation (R = h²S). This approach is most efficient under **truncation selection**, where the selection differential (S) can be calculated without measuring the selected parents, using only the proportion of the population selected.
+
+## A. From Measured Means (Classic Breeder's Equation)
+
+#### Data Format (No CSV file)
+
+This method does not use a CSV file and instead uses the means of initial population, selected parents, and offspring.
+
+```{r define_realized_h2, echo=TRUE}
+calculate_h2_realized_from_means <- function(mean_initial, mean_selected, mean_offspring) {
+  if (!is.numeric(mean_initial) || !is.numeric(mean_selected) || !is.numeric(mean_offspring)) stop("All mean values must be numeric.")
+  R <- mean_offspring - mean_initial
+  S <- mean_selected - mean_initial
+  h2 <- if (S == 0) NA else R / S
+  evolvability <- R / mean_initial
+  return(list(realized_h2 = h2, mean_standardized_evolvability = evolvability, selection_differential_S = S, response_to_selection_R = R))
+}
+```
+
+
+#### Example Usage
+```{r realized_h2, eval=FALSE}
+# Note the 'mean_standardized_evolvability' in the output.
+calculate_h2_realized_from_means(
+  mean_initial = 100,
+  mean_selected = 125,
+  mean_offspring = 110
+)
+```
+
+## B. From Selection Proportion (Truncation Selection)
+
+#### Data Format (`selection_experiment.csv`)
+
+A CSV file with 2 columns: `group` (`initial` or `offspring`) and `phenotype`.
+
+| group       | phenotype |
+|:------------|:----------|
+| initial     | 10.2      |
+| initial     | 9.9       |
+| offspring   | 11.5      |
+| ...         | ...       |
+
+
+```{r define_realized_h2_proportion, echo=TRUE}
+calculate_h2_realized_from_proportion <- function(data, proportion_selected) {
+  if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
+  required_cols <- c("group", "phenotype")
+  if (!all(required_cols %in% names(data))) stop("Dataframe must contain 'group' and 'phenotype' columns.")
+  if (!all(c("initial", "offspring") %in% unique(data$group))) stop("'group' column must contain 'initial' and 'offspring'.")
+  if (!is.numeric(proportion_selected) || proportion_selected <= 0 || proportion_selected >= 1) stop("'proportion_selected' must be between 0 and 1.")
+  initial_phenotypes <- data$phenotype[data$group == "initial"]
+  offspring_phenotypes <- data$phenotype[data$group == "offspring"]
+  mean_initial <- mean(initial_phenotypes)
+  mean_offspring <- mean(offspring_phenotypes)
+  R <- mean_offspring - mean_initial
+  sd_initial <- sd(initial_phenotypes)
+  selection_intensity <- dnorm(qnorm(1 - proportion_selected)) / proportion_selected
+  S <- selection_intensity * sd_initial
+  h2 <- if (S == 0) NA else R / S
+  evolvability <- R / mean_initial
+  return(list(realized_h2 = h2, mean_standardized_evolvability = evolvability))
+}
+```
+
+
+#### Example Usage
+```{r realized_h2_proportion, eval=FALSE}
+# Assumes 'selection_experiment.csv' is in your working directory
+selection_data <- read.csv("selection_experiment.csv")
+
+# Run the function. Note the 'mean_standardized_evolvability' in the output.
+calculate_h2_realized_from_proportion(selection_data, proportion_selected = 0.2)
+```
+
+# Part 3: Broad-Sense Heritability (H²) from Replicated Lines
+
+This method is for genetically identical lines (e.g., RILs, inbred lines, clones) and estimates *broad-sense* heritability (H²), which includes all genetic variance (additive, dominance, and epistatic).
+
+#### Data Format (`replicated_lines.csv`)
+A CSV file with two columns: `line_ID` and `phenotype`.
+
+| line_ID | phenotype |
+|:--------|:----------|
+| RIL_1   | 15.3      |
+| RIL_1   | 14.9      |
+| RIL_2   | 12.1      |
+| ...     | ...       |
+
+#### Function Definition
+```{r define_broad_sense, echo=TRUE}
+calculate_H2_replicated_lines <- function(data, line_type = "clone") {
+  if (!is.data.frame(data)) stop("Input 'data' must be a dataframe.")
+  required_cols <- c("line_ID", "phenotype")
+  if (!all(required_cols %in% names(data))) stop("Dataframe must contain 'line_ID' and 'phenotype'.")
+  if (!(line_type %in% c("clone", "inbred_line"))) stop("line_type must be 'clone' or 'inbred_line'.")
+  model <- lmer(phenotype ~ (1 | line_ID), data = data)
+  variances <- as.data.frame(VarCorr(model))
+  var_genetic <- variances[variances$grp == "line_ID", "vcov"]
+  var_residual <- variances[variances$grp == "Residual", "vcov"]
+  H2 <- var_genetic / (var_genetic + var_residual)
+  interp_note <- if (line_type == "inbred_line") "For inbred lines, Vg is primarily additive (Vg ≈ Va)." else "For clones, Vg includes additive, dominance, and epistatic variance."
+  return(list(broad_sense_H2 = H2, interpretation = interp_note))
+}
+```
+
+
+#### Example Usage
+```{r broad_sense_h2, eval=FALSE}
+library(lme4)
+
+# Assumes 'replicated_lines.csv' is in your working directory
+ril_data <- read.csv("replicated_lines.csv")
+
+# Run the function for inbred lines.
+calculate_H2_replicated_lines(ril_data, line_type = "inbred_line")
+
+```
+
+**Note on Evolvability:** Evolvability (CVA) requires an estimate of the *additive* genetic variance (Vₐ). This method estimates *total* genetic variance (V₉), which includes dominance and epistatic effects. Therefore, CVA cannot be directly calculated from these results.
+
+# Part 4: Heritability of Threshold Traits
+
+This method is for binary (0/1) or disease (present/absent) traits where a continuous phenotype is not measured. It assumes an underlying, unobserved continuous scale called 'liability'. Heritability is estimated on this liability scale based on the prevalence of the trait in the general population and in the relatives of affected individuals.
+
+#### Data Format (No CSV file)
+
+This function does not require a data file. Instead, it requires two prevalence rates (proportions between 0 and 1):
+
+- general_pop_prevalence: The proportion of individuals in the general population that have the trait.
+- relatives_prevalence: The proportion of individuals that have the trait among the relatives of affected individuals.
+
+#### Function Definition
+```{r define_threshold, echo=TRUE}
+calculate_h2_liability_threshold <- function(general_pop_prevalence, relatives_prevalence, relationship_r = 0.5) {
+  if (any(c(general_pop_prevalence, relatives_prevalence) <= 0) || any(c(general_pop_prevalence, relatives_prevalence) >= 1)) {
+    stop("Prevalence rates must be between 0 and 1.")
+  }
+  # Calculate thresholds on the standard normal (liability) scale
+  t_g <- qnorm(1 - general_pop_prevalence) # Threshold for general population
+  t_r <- qnorm(1 - relatives_prevalence)   # Threshold for relatives
+  
+  # Calculate the mean liability of affected individuals in the general population
+  x_g <- dnorm(t_g) / general_pop_prevalence
+  
+  # Falconer's formula to estimate heritability on the liability scale
+  h2 <- (x_g * (t_g - t_r)) / (relationship_r * (1 + (x_g * (x_g - t_g))))
+  
+  return(list(heritability_on_liability_scale = h2))
+}
+```
+
+#### Example Usage
+```{r threshold, eval=FALSE}
+# Example: A disease has a 1% prevalence in the general population,
+# but a 5% prevalence in the full-siblings of affected individuals.
+pop_prev <- 0.01
+sibs_prev <- 0.05
+
+# Run the function. 'relationship_r' is 0.5 for full-sibs.
+calculate_h2_liability_threshold(
+  general_pop_prevalence = pop_prev,
+  relatives_prevalence = sibs_prev,
+  relationship_r = 0.5
+)
+```
+
+**Note on Evolvability:** This model estimates heritability on a conceptual, unobserved 'liability' scale. Standard evolvability metrics like the Coefficient of Additive Genetic Variation (CVA) require a measured trait mean and are therefore not applicable to this method.
+
+# Part 5: Realized Heritability from Proportions (X-QTL Method)
+
+This method, based on the principles of liability threshold models, estimates realized heritability from a truncation selection experiment. It is useful when you don't have individual phenotypic measurements but instead know the proportion of the parental population that was selected and the proportion of the offspring generation that exceeds the same selection threshold.
+
+#### Data Format (No CSV file)
+
+This function does not require a data file. It uses two proportions (values between 0 and 1):
+
+- Par_pro: The proportion of parents selected from the P₀ generation (e.g., the top 5% = 0.05).
+- Off_pro: The proportion of the F₁ offspring generation that exceeds the same phenotypic threshold used to select the parents.
+
+#### Function Definition
+```{r define_XQTL, echo=TRUE}
+realized_heritability_XQTL <- function(Par_pro, Off_pro) {
+  # Calculate the selection threshold on the standard normal (liability) scale
+  threshold <- qnorm(1 - Par_pro)
+  
+  # Calculate the selection intensity (i), which is the mean of the selected parents
+  # on the liability scale. This is the Selection Differential (S).
+  par_i <- dnorm(threshold) / Par_pro
+  
+  # The mean of the F1 offspring generation on the liability scale is calculated
+  # from the proportion of offspring exceeding the threshold. This is the Response to Selection (R).
+  f1_mean <- threshold - qnorm(1 - Off_pro)
+  
+  # Heritability is the ratio of Response to Selection to the Selection Differential (h² = R/S)
+  h2 <- f1_mean / par_i
+  
+  return(list(realized_heritability_on_liability_scale = h2))
+}
+```
+
+#### Example Usage
+```{r XQTL, eval=FALSE}
+# Example 1: An experimenter selects the top 5% of flies for a trait (e.g., crawling height).
+# After they reproduce, 10% of their offspring now exceed that same height threshold.
+realized_heritability_XQTL(Par_pro = 0.05, Off_pro = 0.10)
+
+# Example 2: In a drug exposure experiment, 3% of flies survive (the selected parents).
+# Their offspring are raised and re-exposed, and now 10% of the F1 generation survives.
+realized_heritability_XQTL(Par_pro = 0.03, Off_pro = 0.10)
+```
+
+**Note on Evolvability:** Like the liability threshold model in Part 4, this method operates on a standardized, unobserved 'liability' scale. Because it does not use a measured trait mean, standard evolvability metrics like the Coefficient of Additive Genetic Variation (CVA) are not applicable.
+
