@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pool-Seq Power and LOD Score Plot Comparison</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .main-container {
+            display: flex;
+            justify-content: space-around;
+            width: 98%;
+            margin: 0 auto;
+            gap: 20px;
+            align-items: flex-start;
+        }
+        .panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1, h2, h3 {
+            text-align: center;
+            color: #333;
+        }
+        canvas {
+            border: 1px solid #ddd;
+            display: block;
+            margin: 20px auto;
+            cursor: crosshair;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background-color: #0064a4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #004d7f;
+        }
+        .info {
+            text-align: center;
+            color: #666;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        label {
+            margin: 0 10px;
+            font-size: 16px;
+        }
+        input[type="number"], input[type="range"], select {
+            padding: 5px;
+            margin: 0 5px;
+            vertical-align: middle;
+            font-size: 14px;
+        }
+        .legend {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 12px;
+            border: 1px solid #333;
+        }
+        .stats-panel {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            font-size: 14px;
+            min-height: 50px;
+        }
+        .plot-container {
+            display: flex;
+            gap: 20px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Pool-Seq Comparison: Outbred vs. MPP</h1>
+
+    <div class="main-container">
+        <!-- OUTBRED PANEL -->
+        <div class="panel">
+            <h2>Outbred Population</h2>
+            <div class="controls">
+                <label>Coverage: 
+                    <input type="range" id="coverage_slider" min="1" max="100" value="50">
+                    <span id="coverage_val">50</span>x
+                </label>
+            </div>
+            <h3>Power Plot</h3>
+            <canvas id="outbred_power_plot" width="400" height="150"></canvas>
+            <hr>
+            
+            <h3>SNP-by-SNP LOD Score Visualization</h3>
+            <div class="controls">
+                <label>Number of SNPs: <input type="number" id="outbred_numSNPs" value="1000" min="50" max="2000"></label>
+                <label>LOD Threshold: <input type="number" id="outbred_threshold" value="3.0" step="0.1" min="0"></label>
+                <button onclick="outbred_generateData()">Generate New Data</button>
+            </div>
+            <div class="legend">
+                <div class="legend-item"><div class="legend-color" style="background-color: #3498db;"></div><span>Non-significant</span></div>
+                <div class="legend-item"><div class="legend-color" style="background-color: #e74c3c;"></div><span>Significant</span></div>
+                <div class="legend-item"><div style="width: 20px; height: 2px; background-color: #000000; border: none;"></div><span>Threshold</span></div>
+            </div>
+            <canvas id="outbred_lodCanvas" width="750" height="400"></canvas>
+            <div class="info">
+                <p>Hover over points to see SNP details.</p>
+            </div>
+        </div>
+
+        <!-- MPP PANEL -->
+        <div class="panel">
+            <h2>8-Founder MPP</h2>
+            <div class="controls">
+                <label>Pool Size (N): 
+                    <input type="range" id="pool_size_slider" min="100" max="10000" value="500" style="width: 150px;">
+                    <span id="pool_size_val">500</span>
+                </label>
+            </div>
+            <h3>Power Plot</h3>
+            <canvas id="mpp_power_plot" width="400" height="150"></canvas>
+            <hr>
+
+            <h3>Haplotype Effect Visualization</h3>
+            <div class="controls">
+                <label># Blocks: <input type="number" id="mpp_numBlocks" value="100" min="20" max="200"></label>
+                <label>Effect Size: 
+                    <select id="mpp_effectSize">
+                        <option value="small">Small</option><option value="medium" selected>Medium</option><option value="large">Large</option>
+                    </select>
+                </label>
+                 <label># QTLs: <input type="number" id="mpp_numQTL" value="1" min="0" max="5"></label>
+                <button onclick="mpp_generateData()">Generate New Data</button>
+            </div>
+            <div class="legend">
+                <div class="legend-item" style="color: #e74c3c;">■ F-A</div>
+                <div class="legend-item" style="color: #3498db;">■ F-B</div>
+                <div class="legend-item" style="color: #2ecc71;">■ F-C</div>
+                <div class="legend-item" style="color: #f39c12;">■ F-D</div>
+                <div class="legend-item" style="color: #9b59b6;">■ F-E</div>
+                <div class="legend-item" style="color: #1abc9c;">■ F-F</div>
+                <div class="legend-item" style="color: #e91e63;">■ F-G</div>
+                <div class="legend-item" style="color: #795548;">■ F-H</div>
+            </div>
+            <div class="stats-panel" id="mpp_statsPanel"><strong>Hover over a point for details</strong></div>
+            <div class="plot-container">
+                <div style="flex: 1;">
+                    <h3 style="text-align: center; font-size: 16px;">LOD Scores (df=7)</h3>
+                    <canvas id="mpp_lodCanvas" width="750" height="400"></canvas>
+                </div>
+                <div style="flex: 1;">
+                    <h3 style="text-align: center; font-size: 16px;">Founder Haplotype Effects</h3>
+                    <canvas id="mpp_effectCanvas" width="750" height="400"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const LOD_CONVERSION = 2 * Math.log(10); // Approx 4.605
+
+        // --- SHARED & POWER PLOT SCRIPT ---
+        const coverageSlider = document.getElementById('coverage_slider');
+        const poolSizeSlider = document.getElementById('pool_size_slider');
+        const coverageVal = document.getElementById('coverage_val');
+        const poolSizeVal = document.getElementById('pool_size_val');
+        const outbredPowerCtx = document.getElementById('outbred_power_plot').getContext('2d');
+        const mppPowerCtx = document.getElementById('mpp_power_plot').getContext('2d');
+
+        function drawPowerPlot(ctx, value, maxValue, label, formula) {
+            const power = value / (value + maxValue / 4);
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            ctx.fillStyle = 'black';
+            ctx.font = '18px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`Power vs. ${label}`, ctx.canvas.width / 2, 25);
+            ctx.font = '14px Arial';
+            ctx.fillText(formula, ctx.canvas.width / 2, 50);
+            const barWidth = 150;
+            const barHeight = Math.max(1, power * 70);
+            const x = ctx.canvas.width / 2 - barWidth / 2;
+            const y = ctx.canvas.height - 30 - barHeight;
+            ctx.fillStyle = '#0064a4';
+            ctx.fillRect(x, y, barWidth, barHeight);
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText(power.toFixed(3), ctx.canvas.width / 2, y + barHeight / 2 + 6);
+            ctx.fillStyle = 'black';
+            ctx.font = '14px Arial';
+            ctx.fillText("0.0", x - 25, ctx.canvas.height - 30);
+            ctx.fillText("1.0", x - 25, ctx.canvas.height - 30 - 70);
+            ctx.beginPath();
+            ctx.moveTo(x - 5, ctx.canvas.height - 30);
+            ctx.lineTo(x - 5, ctx.canvas.height - 30 - 75);
+            ctx.stroke();
+        }
+
+        function updatePowerPlots() {
+            const coverage = parseInt(coverageSlider.value);
+            const poolSize = parseInt(poolSizeSlider.value);
+            coverageVal.textContent = coverage;
+            poolSizeVal.textContent = poolSize;
+            drawPowerPlot(outbredPowerCtx, coverage, 100, 'Coverage', 'Power ∝ 1/√coverage');
+            drawPowerPlot(mppPowerCtx, 2 * poolSize, 20000, 'Pool Size (2N)', 'Power ∝ 1/√2N');
+        }
+        
+        coverageSlider.addEventListener('input', updatePowerPlots);
+        poolSizeSlider.addEventListener('input', updatePowerPlots);
+
+        // --- OUTBRED PLOT SCRIPT ---
+        const outbred_canvas = document.getElementById('outbred_lodCanvas');
+        const outbred_ctx = outbred_canvas.getContext('2d');
+        let outbred_snpData = [];
+        let outbred_hoveredSNP = null;
+
+        function outbred_generateBaseLOD() {
+            const randomValue = Math.random() * 2.8; // Max LOD ~ 1.7
+            return (randomValue * randomValue) / LOD_CONVERSION;
+        }
+
+        function outbred_generateData() {
+            const numSNPs = parseInt(document.getElementById('outbred_numSNPs').value);
+            const threshold = parseFloat(document.getElementById('outbred_threshold').value);
+            outbred_snpData = [];
+            
+            for (let i = 0; i < numSNPs; i++) {
+                let lod = 0;
+                // 10% chance of being significant
+                if (Math.random() < 0.1) {
+                    lod = threshold + Math.random() * 3; // LOD between threshold and threshold + 3
+                } else {
+                    lod = outbred_generateBaseLOD();
+                }
+
+                outbred_snpData.push({
+                    id: `rs${1000000 + i}`,
+                    position: i,
+                    lod: lod,
+                    chromosome: Math.floor(i / (numSNPs / 22)) + 1
+                });
+            }
+            outbred_drawPlot();
+        }
+
+        function outbred_drawPlot() {
+            const threshold = parseFloat(document.getElementById('outbred_threshold').value);
+            const padding = { top: 40, right: 40, bottom: 70, left: 80 };
+            const plotWidth = outbred_canvas.width - padding.left - padding.right;
+            const plotHeight = outbred_canvas.height - padding.top - padding.bottom;
+            
+            outbred_ctx.fillStyle = '#ffffff';
+            outbred_ctx.fillRect(0, 0, outbred_canvas.width, outbred_canvas.height);
+            
+            const maxLOD = Math.max(...outbred_snpData.map(s => s.lod), threshold + 2);
+            
+            const thresholdY = padding.top + plotHeight - (threshold / maxLOD) * plotHeight;
+            outbred_ctx.strokeStyle = '#000000';
+            outbred_ctx.lineWidth = 2;
+            outbred_ctx.setLineDash([5, 5]);
+            outbred_ctx.beginPath();
+            outbred_ctx.moveTo(padding.left, thresholdY);
+            outbred_ctx.lineTo(outbred_canvas.width - padding.right, thresholdY);
+            outbred_ctx.stroke();
+            outbred_ctx.setLineDash([]);
+            
+            outbred_snpData.forEach((snp) => {
+                const x = padding.left + (snp.position / outbred_snpData.length) * plotWidth;
+                const y = padding.top + plotHeight - (snp.lod / maxLOD) * plotHeight;
+                const isSignificant = snp.lod > threshold;
+                outbred_ctx.fillStyle = isSignificant ? '#e74c3c' : '#3498db';
+                
+                if (outbred_hoveredSNP && outbred_hoveredSNP.id === snp.id) {
+                    outbred_ctx.fillStyle = '#f39c12';
+                    outbred_ctx.beginPath();
+                    outbred_ctx.arc(x, y, 6, 0, 2 * Math.PI);
+                    outbred_ctx.fill();
+                } else {
+                    outbred_ctx.beginPath();
+                    outbred_ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                    outbred_ctx.fill();
+                }
+            });
+            
+            outbred_ctx.strokeStyle = '#333';
+            outbred_ctx.lineWidth = 2;
+            outbred_ctx.beginPath();
+            outbred_ctx.moveTo(padding.left, padding.top);
+            outbred_ctx.lineTo(padding.left, outbred_canvas.height - padding.bottom);
+            outbred_ctx.lineTo(outbred_canvas.width - padding.right, outbred_canvas.height - padding.bottom);
+            outbred_ctx.stroke();
+            
+            outbred_ctx.fillStyle = '#333';
+            outbred_ctx.font = '16px Arial';
+            outbred_ctx.textAlign = 'right';
+            outbred_ctx.textBaseline = 'middle';
+            for (let i = 0; i <= 5; i++) {
+                const value = (maxLOD / 5) * (5 - i);
+                const y = padding.top + (plotHeight / 5) * i;
+                outbred_ctx.fillText(value.toFixed(1), padding.left - 15, y);
+            }
+            
+            outbred_ctx.textAlign = 'center';
+            outbred_ctx.textBaseline = 'top';
+            const numLabels = 10;
+            for (let i = 0; i <= numLabels; i++) {
+                const x = padding.left + (plotWidth / numLabels) * i;
+                const snpNum = Math.floor((outbred_snpData.length / numLabels) * i);
+                outbred_ctx.fillText(snpNum, x, outbred_canvas.height - padding.bottom + 15);
+            }
+            
+            outbred_ctx.font = '18px Arial';
+            outbred_ctx.fillStyle = '#333';
+            outbred_ctx.textAlign = 'center';
+            outbred_ctx.fillText('SNP Position', outbred_canvas.width / 2, outbred_canvas.height - 30);
+            
+            outbred_ctx.save();
+            outbred_ctx.translate(30, outbred_canvas.height / 2);
+            outbred_ctx.rotate(-Math.PI / 2);
+            outbred_ctx.fillText('LOD Score', 0, 0);
+            outbred_ctx.restore();
+            
+            if (outbred_hoveredSNP) {
+                const x = padding.left + (outbred_hoveredSNP.position / outbred_snpData.length) * plotWidth;
+                const y = padding.top + plotHeight - (outbred_hoveredSNP.lod / maxLOD) * plotHeight;
+                const text = `${outbred_hoveredSNP.id} | LOD = ${outbred_hoveredSNP.lod.toFixed(2)} | Chr ${outbred_hoveredSNP.chromosome}`;
+                const textWidth = outbred_ctx.measureText(text).width;
+                let tooltipX = x + 15;
+                let tooltipY = y - 35;
+                if (tooltipX + textWidth + 20 > outbred_canvas.width - padding.right) { tooltipX = x - textWidth - 35; }
+                if (tooltipY < padding.top) { tooltipY = y + 15; }
+                outbred_ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+                outbred_ctx.fillRect(tooltipX, tooltipY, textWidth + 20, 30);
+                outbred_ctx.fillStyle = '#ffffff';
+                outbred_ctx.font = '14px Arial';
+                outbred_ctx.textAlign = 'left';
+                outbred_ctx.textBaseline = 'middle';
+                outbred_ctx.fillText(text, tooltipX + 10, tooltipY + 15);
+            }
+        }
+
+        outbred_canvas.addEventListener('mousemove', function(e) {
+            const rect = outbred_canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const padding = { top: 40, right: 40, bottom: 70, left: 80 };
+            const plotWidth = outbred_canvas.width - padding.left - padding.right;
+            const plotHeight = outbred_canvas.height - padding.top - padding.bottom;
+            const maxLOD = Math.max(...outbred_snpData.map(s => s.lod), parseFloat(document.getElementById('outbred_threshold').value) + 2);
+            
+            let closestSNP = null;
+            let minDist = 15;
+            outbred_snpData.forEach(snp => {
+                const snpX = padding.left + (snp.position / outbred_snpData.length) * plotWidth;
+                const snpY = padding.top + plotHeight - (snp.lod / maxLOD) * plotHeight;
+                const dist = Math.sqrt((x - snpX) ** 2 + (y - snpY) ** 2);
+                if (dist < minDist) {
+                    minDist = dist;
+                    closestSNP = snp;
+                }
+            });
+            if (closestSNP !== outbred_hoveredSNP) {
+                outbred_hoveredSNP = closestSNP;
+                outbred_drawPlot();
+            }
+        });
+
+        // --- MPP PLOT SCRIPT ---
+        const mpp_lodCanvas = document.getElementById('mpp_lodCanvas');
+        const mpp_lodCtx = mpp_lodCanvas.getContext('2d');
+        const mpp_effectCanvas = document.getElementById('mpp_effectCanvas');
+        const mpp_effectCtx = mpp_effectCanvas.getContext('2d');
+        let mpp_haplotypeData = [];
+        let mpp_hoveredBlock = null;
+        const mpp_founderColors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e91e63', '#795548'];
+        const mpp_founderNames = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+        function mpp_calculateChiSquare(founderEffects) {
+            let chiSquare = 0;
+            const avgEffect = founderEffects.reduce((a, b) => a + b, 0) / 8;
+            for (let i = 0; i < 8; i++) {
+                chiSquare += Math.pow(founderEffects[i] - avgEffect, 2) * 15;
+            }
+            // Reduced noise in calculation
+            return Math.max(0, chiSquare + (Math.random() - 0.5) * 4);
+        }
+
+        function mpp_generateFounderEffects(position, numBlocks, qtlRegions, effectSize) {
+            const effects = [];
+            let inQTL = false, qtlStrength = 0;
+            for (let qtl of qtlRegions) {
+                const distance = Math.abs(position - qtl.center);
+                if (distance < qtl.width) {
+                    inQTL = true;
+                    qtlStrength = Math.exp(-Math.pow(distance / (qtl.width / 2.5), 2));
+                    break;
+                }
+            }
+            const effectMultiplier = { 'small': 0.8, 'medium': 1.5, 'large': 2.5 }[effectSize];
+            for (let i = 0; i < 8; i++) {
+                if (inQTL) {
+                    if (i < 2) effects.push(qtlStrength * (1.8 + Math.random()) * effectMultiplier);
+                    else if (i < 4) effects.push(-qtlStrength * (1.8 + Math.random()) * effectMultiplier);
+                    else effects.push((Math.random() - 0.5) * 1.0 * effectMultiplier);
+                } else {
+                    // Reduced background noise
+                    effects.push((Math.random() - 0.5) * 1.5);
+                }
+            }
+            return effects;
+        }
+
+        function mpp_generateData() {
+            const numBlocks = parseInt(document.getElementById('mpp_numBlocks').value);
+            const numQTL = parseInt(document.getElementById('mpp_numQTL').value);
+            const effectSize = document.getElementById('mpp_effectSize').value;
+            mpp_haplotypeData = [];
+            const qtlRegions = [];
+            for (let i = 0; i < numQTL; i++) {
+                qtlRegions.push({ center: Math.random() * numBlocks, width: 5 + Math.random() * 5 });
+            }
+            for (let i = 0; i < numBlocks; i++) {
+                const founderEffects = mpp_generateFounderEffects(i, numBlocks, qtlRegions, effectSize);
+                const chiSquare = mpp_calculateChiSquare(founderEffects);
+                mpp_haplotypeData.push({
+                    id: `Block_${i + 1}`,
+                    position: i,
+                    founderEffects: founderEffects,
+                    lod: chiSquare / LOD_CONVERSION
+                });
+            }
+            mpp_drawPlots();
+        }
+
+        function mpp_drawPlots() {
+            mpp_drawLODPlot();
+            mpp_drawEffectPlot();
+        }
+
+        function mpp_drawLODPlot() {
+            const ctx = mpp_lodCtx;
+            const canvas = mpp_lodCanvas;
+            const padding = { top: 40, right: 30, bottom: 70, left: 70 };
+            const plotWidth = canvas.width - padding.left - padding.right;
+            const plotHeight = canvas.height - padding.top - padding.bottom;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (mpp_haplotypeData.length === 0) return;
+
+            const threshold = 14.07 / LOD_CONVERSION;
+            const maxLOD = Math.max(...mpp_haplotypeData.map(h => h.lod), threshold + 2);
+            
+            const thresholdY = padding.top + plotHeight - (threshold / maxLOD) * plotHeight;
+            ctx.strokeStyle = '#e74c3c';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(padding.left, thresholdY);
+            ctx.lineTo(canvas.width - padding.right, thresholdY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            for (let i = 1; i < mpp_haplotypeData.length; i++) {
+                const p1 = mpp_haplotypeData[i-1];
+                const p2 = mpp_haplotypeData[i];
+                if (p1.lod > threshold && p2.lod > threshold) {
+                    const x1 = padding.left + (p1.position / (mpp_haplotypeData.length - 1)) * plotWidth;
+                    const y1 = padding.top + plotHeight - (p1.lod / maxLOD) * plotHeight;
+                    const x2 = padding.left + (p2.position / (mpp_haplotypeData.length - 1)) * plotWidth;
+                    const y2 = padding.top + plotHeight - (p2.lod / maxLOD) * plotHeight;
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    ctx.strokeStyle = '#e74c3c';
+                    ctx.lineWidth = 2.5;
+                    ctx.stroke();
+                }
+            }
+
+            mpp_haplotypeData.forEach((block) => {
+                const x = padding.left + (block.position / (mpp_haplotypeData.length - 1)) * plotWidth;
+                const y = padding.top + plotHeight - (block.lod / maxLOD) * plotHeight;
+                const isHovered = mpp_hoveredBlock && mpp_hoveredBlock.id === block.id;
+                ctx.beginPath();
+                ctx.arc(x, y, isHovered ? 7 : 4.5, 0, 2 * Math.PI);
+                ctx.fillStyle = isHovered ? '#f39c12' : (block.lod > threshold ? '#e74c3c' : '#3498db');
+                ctx.fill();
+            });
+            
+            ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(padding.left, padding.top); ctx.lineTo(padding.left, canvas.height - padding.bottom); ctx.lineTo(canvas.width - padding.right, canvas.height - padding.bottom); ctx.stroke();
+            ctx.fillStyle = '#333'; ctx.font = '16px Arial'; ctx.textAlign = 'right';
+            for (let i = 0; i <= 5; i++) { const val = (maxLOD / 5) * (5 - i); const y = padding.top + (plotHeight / 5) * i; ctx.fillText(val.toFixed(1), padding.left - 15, y); }
+            
+            ctx.font = '18px Arial'; ctx.textAlign = 'center';
+            ctx.fillText('Haplotype Block Position', canvas.width / 2, canvas.height - 25);
+            ctx.save(); ctx.translate(30, canvas.height / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('LOD Score', 0, 0); ctx.restore();
+        }
+
+        function mpp_drawEffectPlot() {
+            const ctx = mpp_effectCtx;
+            const canvas = mpp_effectCanvas;
+            const padding = { top: 40, right: 30, bottom: 70, left: 70 };
+            const plotWidth = canvas.width - padding.left - padding.right;
+            const plotHeight = canvas.height - padding.top - padding.bottom;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (mpp_haplotypeData.length === 0) return;
+
+            let maxEffect = 0;
+            mpp_haplotypeData.forEach(block => block.founderEffects.forEach(effect => maxEffect = Math.max(maxEffect, Math.abs(effect))));
+            maxEffect = Math.max(maxEffect, 2);
+
+            const zeroY = padding.top + plotHeight / 2;
+            ctx.strokeStyle = '#333'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
+            ctx.beginPath(); ctx.moveTo(padding.left, zeroY); ctx.lineTo(canvas.width - padding.right, zeroY); ctx.stroke(); ctx.setLineDash([]);
+
+            for (let founderIdx = 0; founderIdx < 8; founderIdx++) {
+                ctx.strokeStyle = mpp_founderColors[founderIdx];
+                ctx.lineWidth = 3;
+                ctx.globalAlpha = 0.75;
+                ctx.beginPath();
+                mpp_haplotypeData.forEach((block, index) => {
+                    const x = padding.left + (block.position / (mpp_haplotypeData.length - 1)) * plotWidth;
+                    const y = zeroY - (block.founderEffects[founderIdx] / maxEffect) * (plotHeight / 2);
+                    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1.0;
+
+            ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(padding.left, padding.top); ctx.lineTo(padding.left, canvas.height - padding.bottom); ctx.lineTo(canvas.width - padding.right, canvas.height - padding.bottom); ctx.stroke();
+            ctx.fillStyle = '#333'; ctx.font = '16px Arial'; ctx.textAlign = 'right';
+            for (let i = 0; i <= 4; i++) { const val = maxEffect * (1 - 2 * i / 4); const y = padding.top + (plotHeight / 4) * i; ctx.fillText(val.toFixed(1), padding.left - 15, y); }
+            
+            ctx.font = '18px Arial'; ctx.textAlign = 'center';
+            ctx.fillText('Haplotype Block Position', canvas.width / 2, canvas.height - 25);
+            ctx.save(); ctx.translate(30, canvas.height / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('Founder Effect Size', 0, 0); ctx.restore();
+        }
+        
+        function mpp_updateStatsPanel(block) {
+            const panel = document.getElementById('mpp_statsPanel');
+            if (!block) { panel.innerHTML = '<strong>Hover over a point for details</strong>'; return; }
+            let html = `<strong>${block.id}</strong> | LOD = ${block.lod.toFixed(2)}<br>`;
+            block.founderEffects.forEach((eff, i) => {
+                html += `<span style="color:${mpp_founderColors[i]}; margin: 0 6px; font-weight: bold;">${mpp_founderNames[i]}: ${eff.toFixed(2)}</span>`;
+            });
+            panel.innerHTML = html;
+        }
+
+        function mpp_handleMouseMove(e) {
+            const canvas = mpp_lodCanvas;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const padding = { left: 70, right: 30 };
+            const plotWidth = canvas.width - padding.left - padding.right;
+
+            let closestBlock = null;
+            if (mpp_haplotypeData.length > 0) {
+                const pos = (x - padding.left) / plotWidth * (mpp_haplotypeData.length - 1);
+                const blockIndex = Math.round(pos);
+                if (blockIndex >= 0 && blockIndex < mpp_haplotypeData.length) {
+                    closestBlock = mpp_haplotypeData[blockIndex];
+                }
+            }
+
+            if (closestBlock !== mpp_hoveredBlock) {
+                mpp_hoveredBlock = closestBlock;
+                mpp_updateStatsPanel(closestBlock);
+                mpp_drawPlots();
+            }
+        }
+
+        mpp_lodCanvas.addEventListener('mousemove', mpp_handleMouseMove);
+        mpp_effectCanvas.addEventListener('mousemove', mpp_handleMouseMove);
+
+        // --- INITIALIZATION ---
+        window.addEventListener('load', function() {
+            updatePowerPlots();
+            outbred_generateData();
+            mpp_generateData();
+        });
+    </script>
+</body>
+</html>

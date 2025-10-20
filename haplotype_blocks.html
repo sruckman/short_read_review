@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Haplotype Blocks Visualization</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h2 {
+            text-align: center;
+            color: #333;
+        }
+        #haplotypeCanvas {
+            border: 1px solid #ddd;
+            display: block;
+            margin: 20px auto;
+            cursor: crosshair;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background-color: #0064a4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #004d7f;
+        }
+        .info {
+            text-align: center;
+            color: #666;
+            margin-top: 10px;
+        }
+        label {
+            margin: 0 10px;
+        }
+        input[type="number"] {
+            width: 60px;
+            padding: 5px;
+            margin: 0 5px;
+        }
+        .color-scheme {
+            text-align: center;
+            margin: 10px 0;
+        }
+        select {
+            padding: 5px 10px;
+            margin: 0 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Haplotype Blocks Visualization</h2>
+        
+        <div class="controls">
+            <label>Samples: <input type="number" id="numSamples" value="20" min="5" max="50"></label>
+            <label>Blocks: <input type="number" id="numBlocks" value="50" min="10" max="200"></label>
+            <button onclick="generateHaplotypes()">Generate New Haplotypes</button>
+            <button onclick="downloadImage()">Download Image</button>
+        </div>
+        
+        <div class="color-scheme">
+            <label>Color Scheme: 
+                <select id="colorScheme" onchange="generateHaplotypes()">
+                    <option value="balanced">Balanced (Less Orange)</option>
+                    <option value="cool">Cool Tones</option>
+                    <option value="warm">Warm Tones</option>
+                    <option value="pastel">Pastel</option>
+                    <option value="vibrant">Vibrant</option>
+                    <option value="original">Original</option>
+                </select>
+            </label>
+        </div>
+        
+        <canvas id="haplotypeCanvas" width="1000" height="600"></canvas>
+        
+        <div class="info">
+            <p>Each row represents a sample/individual, and each colored block represents a haplotype segment.</p>
+            <p>Hover over blocks to see details. Click "Generate New Haplotypes" to create a new visualization.</p>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('haplotypeCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Different color palettes
+        const colorSchemes = {
+            balanced: [
+                '#3498db', '#e74c3c', '#2ecc71', '#9b59b6', '#1abc9c',
+                '#f39c12', '#34495e', '#16a085', '#c0392b', '#27ae60',
+                '#8e44ad', '#2980b9', '#d35400', '#7f8c8d', '#2c3e50',
+                '#e67e22', '#95a5a6', '#f1c40f', '#bdc3c7', '#e84393',
+                '#6c5ce7', '#00b894', '#0984e3', '#fd79a8', '#fdcb6e'
+            ],
+            cool: [
+                '#3498db', '#2ecc71', '#1abc9c', '#9b59b6', '#16a085',
+                '#27ae60', '#8e44ad', '#2980b9', '#2c3e50', '#34495e',
+                '#5dade2', '#48c9b0', '#85929e', '#5499c7', '#52be80',
+                '#45b39d', '#a569bd', '#5d6d7e', '#7fb3d5', '#76d7c4',
+                '#aab7b8', '#7d3c98', '#2874a6', '#1e8449', '#117a65'
+            ],
+            warm: [
+                '#e74c3c', '#f39c12', '#e67e22', '#c0392b', '#d35400',
+                '#f1c40f', '#e84393', '#fd79a8', '#fdcb6e', '#fab1a0',
+                '#ff7675', '#d63031', '#e17055', '#fdcb6e', '#ffeaa7',
+                '#ff6b6b', '#ee5a6f', '#f39c12', '#e67e22', '#d35400',
+                '#e74c3c', '#c0392b', '#a93226', '#922b21', '#7b241c'
+            ],
+            pastel: [
+                '#a8dadc', '#f1faee', '#e63946', '#457b9d', '#1d3557',
+                '#ffcdb2', '#ffb4a2', '#e5989b', '#b5838d', '#6d6875',
+                '#cdb4db', '#ffc8dd', '#ffafcc', '#bde0fe', '#a2d2ff',
+                '#caf0f8', '#ade8f4', '#90e0ef', '#48cae4', '#00b4d8',
+                '#d4a5a5', '#ffb5a7', '#fcd5ce', '#f8edeb', '#e8e8e4'
+            ],
+            vibrant: [
+                '#FF006E', '#FFBE0B', '#FB5607', '#3A86FF', '#8338EC',
+                '#06FFA5', '#FF1654', '#247BA0', '#F72585', '#4361EE',
+                '#4CC9F0', '#7209B7', '#560BAD', '#B5179E', '#F72585',
+                '#4895EF', '#4361EE', '#3F37C9', '#480CA8', '#560BAD',
+                '#06FFA5', '#FFBE0B', '#FF006E', '#8338EC', '#3A86FF'
+            ],
+            original: [
+                '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+                '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52B788',
+                '#E63946', '#A8DADC', '#457B9D', '#F1FAEE', '#E76F51',
+                '#2A9D8F', '#E9C46A', '#F4A261', '#264653', '#8338EC',
+                '#FF006E', '#FFBE0B', '#FB5607', '#3A86FF', '#8338EC'
+            ]
+        };
+        
+        let haplotypes = [];
+        
+        function getColors() {
+            const scheme = document.getElementById('colorScheme').value;
+            return colorSchemes[scheme];
+        }
+        
+        function generateHaplotypes() {
+            const numSamples = parseInt(document.getElementById('numSamples').value);
+            const numBlocks = parseInt(document.getElementById('numBlocks').value);
+            const colors = getColors();
+            
+            haplotypes = [];
+            
+            for (let i = 0; i < numSamples; i++) {
+                const sample = [];
+                let currentPos = 0;
+                
+                while (currentPos < numBlocks) {
+                    // Random block length (1-5 units)
+                    const blockLength = Math.floor(Math.random() * 5) + 1;
+                    const colorIndex = Math.floor(Math.random() * colors.length);
+                    
+                    sample.push({
+                        start: currentPos,
+                        length: Math.min(blockLength, numBlocks - currentPos),
+                        color: colors[colorIndex],
+                        haplotypeId: colorIndex
+                    });
+                    
+                    currentPos += blockLength;
+                }
+                
+                haplotypes.push(sample);
+            }
+            
+            drawHaplotypes();
+        }
+        
+        function drawHaplotypes() {
+            const numSamples = haplotypes.length;
+            const numBlocks = parseInt(document.getElementById('numBlocks').value);
+            
+            const padding = 40;
+            const plotWidth = canvas.width - 2 * padding;
+            const plotHeight = canvas.height - 2 * padding;
+            
+            const rowHeight = plotHeight / numSamples;
+            const blockWidth = plotWidth / numBlocks;
+            
+            // Clear canvas
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw haplotype blocks
+            haplotypes.forEach((sample, sampleIndex) => {
+                const y = padding + sampleIndex * rowHeight;
+                
+                sample.forEach(block => {
+                    const x = padding + block.start * blockWidth;
+                    const width = block.length * blockWidth;
+                    
+                    ctx.fillStyle = block.color;
+                    ctx.fillRect(x, y, width, rowHeight - 1);
+                    
+                    // Add subtle border
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                    ctx.lineWidth = 0.5;
+                    ctx.strokeRect(x, y, width, rowHeight - 1);
+                });
+            });
+            
+            // Draw axis labels
+            ctx.fillStyle = '#333';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            
+            // X-axis label
+            ctx.fillText('Genomic Position (blocks)', canvas.width / 2, canvas.height - 10);
+            
+            // Y-axis label
+            ctx.save();
+            ctx.translate(15, canvas.height / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText('Samples', 0, 0);
+            ctx.restore();
+            
+            // Draw scale markers
+            ctx.fillStyle = '#666';
+            ctx.font = '10px Arial';
+            
+            // X-axis markers
+            for (let i = 0; i <= 5; i++) {
+                const x = padding + (plotWidth / 5) * i;
+                const blockNum = Math.round((numBlocks / 5) * i);
+                ctx.fillText(blockNum, x, canvas.height - 20);
+            }
+            
+            // Y-axis markers
+            ctx.textAlign = 'right';
+            for (let i = 0; i < numSamples; i += Math.max(1, Math.floor(numSamples / 10))) {
+                const y = padding + i * rowHeight + rowHeight / 2;
+                ctx.fillText(i + 1, padding - 5, y + 3);
+            }
+        }
+        
+        function downloadImage() {
+            const link = document.createElement('a');
+            link.download = 'haplotype_blocks.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+        
+        // Tooltip on hover
+        canvas.addEventListener('mousemove', function(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            const padding = 40;
+            const plotWidth = canvas.width - 2 * padding;
+            const plotHeight = canvas.height - 2 * padding;
+            const numSamples = haplotypes.length;
+            const numBlocks = parseInt(document.getElementById('numBlocks').value);
+            const rowHeight = plotHeight / numSamples;
+            const blockWidth = plotWidth / numBlocks;
+            
+            if (x >= padding && x <= canvas.width - padding && 
+                y >= padding && y <= canvas.height - padding) {
+                
+                const sampleIndex = Math.floor((y - padding) / rowHeight);
+                const blockIndex = Math.floor((x - padding) / blockWidth);
+                
+                if (sampleIndex < haplotypes.length) {
+                    const sample = haplotypes[sampleIndex];
+                    const block = sample.find(b => blockIndex >= b.start && blockIndex < b.start + b.length);
+                    
+                    if (block) {
+                        canvas.title = `Sample: ${sampleIndex + 1}, Position: ${blockIndex}, Haplotype: ${block.haplotypeId}`;
+                    }
+                }
+            }
+        });
+        
+        // Generate initial haplotypes
+        generateHaplotypes();
+    </script>
+</body>
+</html>
