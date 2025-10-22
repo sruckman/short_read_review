@@ -1,0 +1,372 @@
+---
+title: "Msprime Simulation in R Markdown"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Load the reticulate package.
+# The RETICULATE_PYTHON environment variable we set in .Renviron will automatically
+# ensure that the correct Python version is used from the very start.
+library(reticulate)
+
+# This command will now run first and confirm that R has loaded the correct Python environment
+# specified in your .Renviron file.
+py_config()
+```
+
+### Introduction
+This document runs a `msprime` simulation. The Python environment is now specified globally for R using the `.Renviron` file, which is the most robust method for ensuring the `Knit` process uses the correct version of Python.
+
+### Python Simulation Code
+This chunk will now run correctly.
+
+```{python msprime_simulation, echo=TRUE, eval=FALSE}
+# Import the necessary libraries
+import msprime
+import numpy as np
+import os
+
+print("\n--- Starting FAST msprime simulation (1Mb region) ---")
+
+# --- PARAMETER CHANGES FOR SPEED ---
+# We simulate a 1 million base pair (1Mb) region, not 1 billion.
+# This is the key to making the simulation run quickly.
+sequence_length = 1e6 # This was 1e9 before
+
+# All other parameters are kept the same for a fly-like simulation
+Q = 100
+ts = msprime.sim_ancestry(
+        samples=1000,
+        recombination_rate=Q * 2e-8,
+        sequence_length=sequence_length, # Use the new, smaller length
+        population_size=1e6 / Q,
+        random_seed=123456)
+
+mts = msprime.sim_mutations(ts, rate=Q * 5e-9)
+genotype_matrix = mts.genotype_matrix()
+output_file = 'genotype_matrix_1Mb.txt'
+np.savetxt(output_file, genotype_matrix, fmt='%d')
+
+print(f"Shape of the genotype matrix: {genotype_matrix.shape}")
+print(f"Successfully saved 1Mb genotype matrix to: {os.path.abspath(output_file)}")
+print("--- Simulation complete ---\n")
+```
+
+```{r, eval=FALSE}
+# Load the tidyverse library for read_delim and write_rds
+library(tidyverse)
+
+# Read the text file created by the Python script
+# It has no column headers, and values are separated by spaces
+genotype_matrix <- read_delim("genotype_matrix_1Mb.txt", delim = " ", col_names = FALSE)
+
+# The R script expects the file to be named "genos.rds"
+write_rds(genotype_matrix, "genos.rds")
+
+print("Successfully created genos.rds")
+```
+
+```{r SNPs, eval=FALSE}
+# Load necessary libraries
+library(tidyverse)
+library(cowplot)
+
+# --- Simulation Parameters ---
+N = 10000
+BN_vector = 500
+C_vector = 200
+diff_vector = 25
+
+# --- Read in the initial genotype data ---
+df_raw = read_rds("genos.rds")
+row.names(df_raw) = 1:nrow(df_raw)
+
+# --- Main Simulation Loop ---
+results_list = list()
+cc = 1
+for (BN in BN_vector){
+  # 1. Create bottlenecked population
+  df = df_raw[,sample(1:ncol(df_raw), BN)]
+  
+  for (C in C_vector){
+    for (diff in diff_vector){
+      
+      # 2. Create Control population and filter for common SNPs
+      df_Control = df[,sample(1:ncol(df), N, replace = TRUE)]
+      freq = apply(df_Control, 1, mean)
+      filter = (freq > 0.05 & freq < 0.95)
+      df_Control = df_Control[filter,]
+      labels = as.numeric(as.character(row.names(df_Control)))
+      
+      # Instead of picking the QTN outside the loop, pick a valid one from the
+      # SNPs that survived the filtering step. This guarantees it exists.
+      available_snps <- row.names(df_Control)
+      # Pick a SNP near the middle of the remaining ones
+      QTN_i <- available_snps[round(length(available_snps) / 2)]
+      # --- END FIX ---
+
+      # 3. Create Case population with a frequency shift at the QTN
+      Count_1 = sum(df_Control[row.names(df_Control) == QTN_i,])
+      Count_0 = N - Count_1
+      diff_N = round(N * diff / 100, 0)
+      
+      if(Count_1 < N / 2){
+        Count_1 = Count_1 + diff_N
+        Count_0 = Count_0 - diff_N
+      } else {
+        Count_1 = Count_1 - diff_N
+        Count_0 = Count_0 + diff_N
+      }
+      
+      QTN_indicator = df_Control[row.names(df_Control) == QTN_i,] == 1
+      Cases_1_indices = sample((1:ncol(df_Control))[QTN_indicator], Count_1, replace=TRUE)
+      Cases_0_indices = sample((1:ncol(df_Control))[!QTN_indicator], Count_0, replace=TRUE)
+      df_Case = cbind(df_Control[,Cases_1_indices], df_Control[,Cases_0_indices])
+      
+      # 4. Simulate Pool-seq GWAS and calculate p-values (-log10p)
+      df_summary = data.frame(
+        cov = rnbinom(nrow(df_Control), size = C, mu = C),
+        f_Control = apply(df_Control, 1, mean),
+        f_Case = apply(df_Case, 1, mean)
+      )
+      
+      LOD = function(x){
+  F1 = rbinom(1,x[1],x[2])
+  F2 = rbinom(1,x[1],x[3])
+  M = matrix(c(F1,x[1]-F1,F2,x[1]-F2),nrow=2)
+
+  # CORRECTED AND MORE ROBUST CHECK:
+  # First, check if any part of the matrix is not a finite number (e.g., NA or NaN).
+  # Then, check if any cell has a count less than 5.
+  if (any(!is.finite(M)) || any(M < 5)) {
+    return(NA)
+  }
+
+  # If the check is passed, proceed with the test
+  -log10(chisq.test(M)$p.value)
+}
+      
+      myLOD = apply(df_summary, 1, LOD_function)
+      LL = length(myLOD)
+      results_list[[cc]] = data.frame(BN=rep(BN,LL), C=rep(C,LL), diff=rep(diff,LL),
+                                      pos=labels, QTN=(labels==QTN_i), LOD=myLOD)
+      cc = cc + 1
+      cat("done (BN/C/diff):  ", BN, " ", C, " ", diff, "\n")
+    }
+  }
+}
+
+final_df <- do.call(rbind, results_list)
+
+
+```
+
+```{r fig_simple, eval=FALSE}
+plot_data <- final_df 
+
+# Calculate the Bonferroni correction threshold.
+num_tests <- nrow(plot_data)
+bonferroni_threshold <- -log10(0.05 / num_tests)
+
+p_single_panel <- ggplot(plot_data, aes(x = pos, y = LOD)) +
+  
+  # A single geom_point layer where the color is determined by its significance.
+  # We create a new aesthetic mapping: color is TRUE if LOD > threshold, and FALSE otherwise.
+  geom_point(aes(color = (LOD > bonferroni_threshold)), alpha = 0.7, size = 1.5) +
+  
+  # Manually set the colors for the TRUE/FALSE conditions.
+  # guide="none" hides the legend to keep the plot clean.
+  scale_color_manual(values = c("TRUE" = "dodgerblue3", "FALSE" = "darkgrey"), guide = "none") +
+  
+  # Add the black dashed line for the Bonferroni significance threshold
+  geom_hline(yintercept = bonferroni_threshold, linetype = "dashed", color = "black") +
+  
+  # Set the y-axis limit to 40
+  coord_cartesian(ylim = c(0, 10)) +
+  
+  # Add the axis labels back using the labs() function.
+  labs(x = "Genomic Position", y = "-log10(p-value)") +
+  
+  # Use a minimal theme and remove all labels and text
+  theme_classic() +
+  theme(
+    axis.line = element_line(color = "black"),
+    axis.title = element_text(size = 14), 
+    axis.text = element_text(size = 12) 
+  )
+
+
+ggsave("Figure_ER.png", plot = p_single_panel, width = 4, height = 3, units = "in", dpi = 300, bg = "white")
+
+print("Final single-panel plot saved as Figure_ER.png")
+print(paste("The Bonferroni significance threshold was calculated to be:", round(bonferroni_threshold, 2)))
+```
+
+```{r Tony_SNPS, eval=FALSE}
+# BN = size to bottleneck the initial coalescent sample to (<=2000)
+#      that is how many allele are used to found the population
+# N = expanded population size.  That is, we found a population 
+#      from BN gametes and then instantaneously expand to size N.
+# C = expected coverage of poolseq, assume site to site variance in
+#      coverage is twice the mean.  This over-dispersed poisson coverage
+#      is common in short read data.
+# diff = percent different in allele frequency between cases and controls
+library(tidyverse)
+
+N = 10000
+BN = 500
+C = 200
+diff = 25
+
+LOD = function(x){
+F1 = rbinom(1,x[1],x[2])
+F2 = rbinom(1,x[1],x[3])
+M = matrix(c(F1,x[1]-F1,F2,x[1]-F2),nrow=2)
+# Check if all entries are non-negative and finite
+if (any(M < 6) || any(!is.finite(M))) {
+return(NA)
+}
+-log10(chisq.test(M)$p.value)
+}
+
+
+df_raw = read_rds("genos.rds")
+row.names(df_raw) = 1:nrow(df_raw)
+df = df_raw[,sample(1:ncol(df_raw), BN)]
+df_Control = df[,sample(1:ncol(df), N, replace = TRUE)]
+freq = apply(df_Control,1,function(x) sum(x)/N)
+filter = (freq > 0.05 & freq < 0.95)
+df_Control = df_Control[filter,]
+labels = as.numeric(as.character(row.names(df_Control)))
+
+
+for(QTN_i in sample(row.names(df_Control),25)){
+
+  Count_1 = sum(df_Control[row.names(df_Control)==QTN_i,])
+  Count_0 = N - Count_1
+  diff_N = round(N*diff/100,0)
+  if(Count_1 < N/2){
+    Count_1 = Count_1 + diff_N
+    Count_0 = Count_0 - diff_N
+  }else{
+    Count_1 = Count_1 - diff_N
+    Count_0 = Count_0 + diff_N
+  }
+  QTN_indicator = df_Control[row.names(df_Control)==QTN_i,] == 1
+  Cases_1 = sample((1:ncol(df_Control))[QTN_indicator], Count_1, replace=TRUE)
+  Cases_0 = sample((1:ncol(df_Control))[!QTN_indicator], Count_0, replace=TRUE)
+  df_Case = cbind(df_Control[,Cases_1],df_Control[,Cases_0])
+
+  df_summary = data.frame(cov = rnbinom(nrow(df_Control), size=C, mu=C),
+                        f_Control = apply(df_Control,1,mean),
+                        f_Case = apply(df_Case,1,mean)
+  )
+  myLOD = apply(df_summary,1,LOD)
+  df_summary$LOD = myLOD
+  df_summary$names = row.names(df_Control)
+  df_summary$pos = (as.numeric(df_summary$names)*6.64)/1e6
+  df_summary = df_summary %>% as_tibble() %>% filter(!is.na(LOD))
+
+  plot_data <- df_summary
+
+  # Calculate the Bonferroni correction threshold.
+  num_tests <- nrow(plot_data)
+  bonferroni_threshold <- -log10(0.05 / num_tests)
+
+  p_single_panel <- ggplot(plot_data, aes(x = pos, y = LOD)) +
+    
+    # A single geom_point layer where the color is determined by its significance.
+    geom_point(aes(color = (LOD > bonferroni_threshold)), alpha = 0.7, size = 1.5) +
+    
+    # Manually set the colors for the TRUE/FALSE conditions.
+    scale_color_manual(values = c("TRUE" = "dodgerblue3", "FALSE" = "darkgrey"), guide = "none") +
+    
+    # Add the black dashed line for the Bonferroni significance threshold
+    geom_hline(yintercept = bonferroni_threshold, linetype = "dashed", color = "black") +
+    
+    # Set the y-axis limit
+    coord_cartesian(ylim = c(0, 10)) +
+    
+    # Add the axis labels
+    labs(x = "Genomic Position (Mb)", y = expression(-log[10](p-value))) +
+    
+    # Use a minimal theme and set text properties
+    theme_classic() +
+    theme(
+      axis.line = element_line(color = "black"),
+      axis.title = element_text(size = 14), 
+      axis.text = element_text(size = 12) 
+    )
+
+  # Save each plot with a unique name based on the causal SNP (QTN)
+  ggsave(paste0("Figure_ER_QTN_", QTN_i, ".png"), plot = p_single_panel, width = 4, height = 3, units = "in", dpi = 300, bg = "white")
+
+  print(paste("Plot for QTN", QTN_i, "saved as Figure_ER_QTN_", QTN_i, ".png"))
+  print(paste("The Bonferroni significance threshold was:", round(bonferroni_threshold, 2)))
+  
+}
+```
+
+
+```{r haplotypes, eval=FALSE}
+library(dplyr)
+library(ggplot2)
+
+
+file_path <- "ZINC_Hanson.pseudoscan.txt"
+gwas_data <- read.table(file_path, header = TRUE, sep = "")
+
+
+# Calculate the Bonferroni-corrected significance threshold
+bonferroni_threshold <- -log10(0.05 / 6000)
+
+# Define the 1 Mb region you want to plot
+target_chromosome <- "chrX"
+region_start_pos <- 13500000
+region_end_pos <- region_start_pos + 1500000
+
+# Filter the data for the specified region
+plot_data <- gwas_data %>%
+  filter(chr == target_chromosome, pos >= region_start_pos, pos <= region_end_pos)
+
+
+# Step 4: Create the plot using your preferred ggplot2 style
+# We are assuming 'Pseu_log10p' is the column you refer to as 'LOD'
+regional_plot <- ggplot(plot_data, aes(x = pos, y = Pseu_log10p)) +
+  
+  # Add the black dashed line for the Bonferroni significance threshold
+  geom_hline(yintercept = bonferroni_threshold, linetype = "dashed", color = "black") +
+  
+  # A single geom_point layer where color is determined by its significance
+  geom_point(aes(color = (Pseu_log10p > bonferroni_threshold)), alpha = 0.7, size = 1.5) +
+  
+  # Manually set the colors for the TRUE (significant) / FALSE (not significant) conditions
+  # guide="none" hides the color legend
+  scale_color_manual(values = c("TRUE" = "dodgerblue3", "FALSE" = "darkgrey"), guide = "none") +
+  
+  # Set the y-axis limit 
+  coord_cartesian(ylim = c(0, 20)) +
+  
+  # Add axis labels and a title
+  labs(
+    x = "Genomic Position",
+    y = "-log10(p-value)"
+  ) +
+  
+  # Use a classic theme and ensure axis lines are visible
+  theme_classic() +
+  theme(
+    axis.line = element_line(color = "black"),
+    axis.title = element_text(size = 14), 
+    axis.text = element_text(size = 12)
+  )
+print(regional_plot)
+
+ggsave("XQTL.png", plot = regional_plot, width = 4, height = 3, dpi = 300)
+
+```
+
+
+
